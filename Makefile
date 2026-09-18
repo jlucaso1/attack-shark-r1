@@ -3,17 +3,27 @@ BINDIR ?= $(PREFIX)/bin
 RULESDIR ?= /etc/udev/rules.d
 SYSTEMDDIR ?= /etc/systemd/system
 
+TARGET = target/release/attack-shark-r1
+
 all: build
 
-build:
+build: $(TARGET)
+
+$(TARGET):
 	cargo build --release
 
 test:
 	cargo test
 
-install: build
+install:
+	@if [ ! -f $(TARGET) ]; then \
+		echo "Error: $(TARGET) not found."; \
+		echo "Please build the project first without sudo:"; \
+		echo "  cargo build --release"; \
+		exit 1; \
+	fi
 	install -d $(DESTDIR)$(BINDIR)
-	install -m 755 target/release/attack-shark-r1 $(DESTDIR)$(BINDIR)/attack-shark-r1
+	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/attack-shark-r1
 	install -d $(DESTDIR)$(RULESDIR)
 	install -m 644 99-attack-shark-r1.rules $(DESTDIR)$(RULESDIR)/99-attack-shark-r1.rules
 	install -d $(DESTDIR)$(SYSTEMDDIR)
