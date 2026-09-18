@@ -54,7 +54,7 @@ impl MouseConfig {
         Ok(())
     }
 
-    /// Finds the configuration file from custom path or standard search locations.
+    /// Finds the INI configuration file in standard search locations.
     pub fn find_config_file(custom_path: Option<&str>) -> Option<PathBuf> {
         if let Some(path) = custom_path {
             let p = PathBuf::from(path);
@@ -85,7 +85,7 @@ impl MouseConfig {
         None
     }
 
-    /// Loads configuration from an INI file without external dependencies.
+    /// Loads configuration from an INI file.
     pub fn load_from_file(path: &Path) -> Result<Self, DriverError> {
         let content = fs::read_to_string(path)
             .map_err(|e| DriverError::Config(format!("Failed to read INI file {}: {e}", path.display())))?;

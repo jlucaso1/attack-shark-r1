@@ -3,14 +3,21 @@ name = "attack-shark-r1"
 version = "0.1.0"
 edition = "2024"
 authors = ["jlucaso"]
-description = "High-performance Rust driver and CLI for the Attack Shark R1 wireless/wired mouse"
+description = "Linux driver and battery daemon for the Attack Shark R1 mouse"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+dpi = []
+polling-rate = []
+sleep = []
+config = ["dpi", "polling-rate", "sleep"]
+tuning = ["config"]
 
 [dependencies]
 rusb = "0.9"
 device-driver = { version = "2.1.1", features = ["macros"] }
-usage = { package = "usage-rs", version = "6", default-features = false, features = ["help"] }
 
 [profile.release]
 opt-level = "z"

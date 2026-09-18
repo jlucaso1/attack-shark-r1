@@ -3,12 +3,12 @@ device AttackSharkR1Device {
     default-access: RW,
     default-byte-order: LE,
 
-    /// Battery status report received on endpoint 0x83
+    /// Battery status report on endpoint 0x83.
     register BatteryReport {
         address: 0x03,
         access: RO,
         fields: fieldset _ {
-            size-bytes: 5,
+            size-bytes: 8,
             /// HID Report ID (0x03)
             field report_id 7:0 -> uint,
             /// Header byte
@@ -17,12 +17,18 @@ device AttackSharkR1Device {
             field status 23:16 -> uint,
             /// Protocol flags
             field flags 31:24 -> uint,
-            /// Battery charge raw value divided by 10 (e.g. 9 = 90%)
+            /// Battery charge raw value (0..10 or 0..100)
             field charge_raw 39:32 -> uint,
+            /// Extra flag byte 1
+            field flag1 47:40 -> uint,
+            /// Extra flag byte 2
+            field flag2 55:48 -> uint,
+            /// Extra flag byte 3
+            field flag3 63:56 -> uint,
         },
     },
 
-    /// Polling rate configuration (Feature Report 0x06)
+    /// Polling rate report (0x06).
     register PollingRateConfig {
         address: 0x06,
         access: WO,
@@ -35,7 +41,7 @@ device AttackSharkR1Device {
         },
     },
 
-    /// Sleep and response times configuration (Feature Report 0x05)
+    /// Sleep and debounce timing report (0x05).
     register SleepTimesConfig {
         address: 0x05,
         access: WO,
@@ -55,7 +61,7 @@ device AttackSharkR1Device {
         },
     },
 
-    /// DPI and sensor features configuration (Feature Report 0x04)
+    /// DPI stages and sensor options report (0x04).
     register DpiConfig {
         address: 0x04,
         access: WO,

@@ -1,35 +1,45 @@
-use device_driver::{Block, FieldsetMetadata, RegisterInterface};
+use device_driver::Block;
+#[cfg(any(feature = "polling-rate", feature = "sleep", feature = "dpi"))]
+use device_driver::{FieldsetMetadata, RegisterInterface};
 
+#[cfg(feature = "config")]
 use crate::config::MouseConfig;
+#[cfg(feature = "dpi")]
 use crate::dpi::dpi_to_byte;
 use crate::error::DriverError;
+#[cfg(feature = "polling-rate")]
+use crate::protocol::PollingRate;
 use crate::protocol::{
-    AttackSharkR1Device, PollingRate, UsbTransport, PRODUCT_ID_WIRED, PRODUCT_ID_WIRELESS,
+    AttackSharkR1Device, UsbTransport, PRODUCT_ID_WIRED, PRODUCT_ID_WIRELESS,
     VENDOR_ID,
 };
 
-/// High-level representation of the mouse battery status.
-#[derive(Debug, Clone, PartialEq)]
+/// Mouse battery status.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatteryStatus {
-    /// Battery charge percentage (0-100%).
+    /// Battery charge percentage (0..=100).
     pub percentage: u8,
-    /// Whether the mouse is connected via USB cable.
+    /// Whether the mouse is charging.
+    pub is_charging: bool,
+    /// True if connected with a USB-C cable.
     pub is_wired: bool,
-    /// Raw charge value reported by the mouse (0-10).
+    /// Raw charge value from hardware.
     pub raw_charge: u8,
     /// Raw status byte.
     pub status_code: u8,
+    /// Protocol flags byte.
+    pub flags: u8,
     /// HID Report ID (0x03).
     pub report_id: u8,
 }
 
-/// Attack Shark R1 mouse driver.
+/// Attack Shark R1 driver.
 pub struct AttackSharkR1 {
     device: AttackSharkR1Device<UsbTransport>,
 }
 
 impl AttackSharkR1 {
-    /// Discovers and opens the Attack Shark R1 mouse (either wireless 2.4G dongle or wired).
+    /// Opens the mouse via 2.4G wireless dongle or USB-C cable.
     pub fn open() -> Result<Self, DriverError> {
         let devices = rusb::devices()?;
         let mut target = None;
@@ -56,37 +66,53 @@ impl AttackSharkR1 {
         })
     }
 
-    /// Returns whether the mouse is currently connected wired.
+    /// Returns true if connected with a USB cable.
     pub fn is_wired(&mut self) -> bool {
         self.device.interface().is_wired()
     }
 
-    /// Queries the current battery charge percentage (0..=100%).
+    /// Reads battery charge percentage (0..=100).
     pub fn get_battery_percentage(&mut self) -> Result<u8, DriverError> {
-        let report = self.device.battery_report().read()?;
-        let raw = report.charge_raw();
-        // The mouse reports charge from 0 to 10 (representing 0% to 100%)
-        let pct = (raw as u16 * 10).min(100) as u8;
-        Ok(pct)
+        let status = self.get_battery_status()?;
+        Ok(status.percentage)
     }
 
-    /// Queries detailed battery status including raw values and connection type.
+    /// Reads battery percentage, charging state, and connection type.
     pub fn get_battery_status(&mut self) -> Result<BatteryStatus, DriverError> {
         let report = self.device.battery_report().read()?;
         let raw = report.charge_raw();
-        let pct = (raw as u16 * 10).min(100) as u8;
+        // Mouse reports tenths (0..=10) or raw percentage (0..=100)
+        let pct = if raw <= 10 {
+            (raw as u16 * 10).min(100) as u8
+        } else {
+            raw.min(100)
+        };
         let is_wired = self.device.interface().is_wired();
+        let flags = report.flags();
+        let flag1 = report.flag_1();
+        let flag2 = report.flag_2();
+        let flag3 = report.flag_3();
+
+        // 0x01 is discharging; 0x02, 0x03, 0x80 or non-zero flags indicate charging
+        let is_charging = is_wired
+            || matches!(flags, 0x02 | 0x03 | 0x80)
+            || flag1 != 0
+            || flag2 != 0
+            || flag3 != 0;
 
         Ok(BatteryStatus {
             percentage: pct,
+            is_charging,
             is_wired,
             raw_charge: raw,
             status_code: report.status(),
+            flags,
             report_id: report.report_id(),
         })
     }
 
-    /// Sets the mouse USB polling rate (125Hz, 250Hz, 500Hz, or 1000Hz).
+    /// Sets USB polling rate (125, 250, 500, or 1000 Hz).
+    #[cfg(feature = "polling-rate")]
     pub fn set_polling_rate(&mut self, rate: PollingRate) -> Result<(), DriverError> {
         let rate_val = rate as u16;
         let rate_bytes = rate_val.to_le_bytes();
@@ -107,10 +133,8 @@ impl AttackSharkR1 {
         Ok(())
     }
 
-    /// Sets power saving and debouncing times:
-    /// - `sleep_time_seconds`: 0.5 to 30.0 seconds
-    /// - `deep_sleep_minutes`: 1 to 60 minutes
-    /// - `debounce_ms`: 4 to 50 ms (must be even)
+    /// Sets sleep delay (0.5 to 30.0 s), deep sleep (1 to 60 min), and debounce (4 to 50 ms).
+    #[cfg(feature = "sleep")]
     pub fn set_sleep_times(
         &mut self,
         sleep_time_seconds: f64,
@@ -151,7 +175,8 @@ impl AttackSharkR1 {
         Ok(())
     }
 
-    /// Configures the 6 DPI stages, active stage, and angle snap / ripple control features.
+    /// Sets the 6 DPI stages, active stage, angle snap, and ripple control.
+    #[cfg(feature = "dpi")]
     pub fn set_dpi_profile(
         &mut self,
         dpis: [u32; 6],
@@ -221,7 +246,8 @@ impl AttackSharkR1 {
         Ok(())
     }
 
-    /// Applies a full `MouseConfig` to the hardware.
+    /// Applies an INI configuration to hardware registers.
+    #[cfg(feature = "config")]
     pub fn apply_config(&mut self, config: &MouseConfig) -> Result<(), DriverError> {
         config.validate()?;
         self.set_polling_rate(config.polling_rate)?;
