@@ -1,6 +1,8 @@
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 
 use crate::error::DriverError;
 
@@ -8,12 +10,14 @@ const UHID_PATH: &str = "/dev/uhid";
 const BUS_USB: u16 = 0x03;
 
 const UHID_DESTROY: u32 = 1;
+const UHID_GET_REPORT: u32 = 9;
+const UHID_GET_REPORT_REPLY: u32 = 10;
 const UHID_CREATE2: u32 = 11;
 const UHID_INPUT2: u32 = 12;
 
 /// Standard HID report descriptor for a mouse exposing Battery Strength.
-/// Linux kernel hid-input (`CONFIG_HID_BATTERY_STRENGTH`) will automatically
-/// recognize this descriptor and register a `/sys/class/power_supply/hid-...-battery`
+/// Linux kernel hid-input (`CONFIG_HID_BATTERY_STRENGTH`) automatically
+/// recognizes this descriptor and registers a `/sys/class/power_supply/hid-...-battery`
 /// device, which UPower and KDE Plasma pick up seamlessly.
 const BATTERY_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x01,        // Usage Page (Generic Desktop Ctrls)
@@ -63,6 +67,20 @@ struct UhidInput2Event {
 }
 
 #[repr(C, packed)]
+struct UhidGetReportReplyReq {
+    id: u32,
+    err: u16,
+    size: u16,
+    data: [u8; 4096],
+}
+
+#[repr(C, packed)]
+struct UhidGetReportReplyEvent {
+    event_type: u32,
+    req: UhidGetReportReplyReq,
+}
+
+#[repr(C, packed)]
 struct UhidDestroyEvent {
     event_type: u32,
 }
@@ -70,6 +88,7 @@ struct UhidDestroyEvent {
 /// A virtual UHID device bridging the mouse battery to Linux power_supply & UPower.
 pub struct UhidBatteryDevice {
     file: File,
+    current_percentage: Arc<AtomicU8>,
 }
 
 impl UhidBatteryDevice {
@@ -136,12 +155,61 @@ impl UhidBatteryDevice {
         file.write_all(raw_slice)
             .map_err(|e| DriverError::Io(io::Error::new(e.kind(), format!("Failed to create UHID device: {e}"))))?;
 
-        Ok(Self { file })
+        let current_percentage = Arc::new(AtomicU8::new(100));
+        let pct_clone = Arc::clone(&current_percentage);
+        let mut read_file = file.try_clone().map_err(DriverError::Io)?;
+        let mut write_clone = file.try_clone().map_err(DriverError::Io)?;
+
+        // Spawn a kernel event responder thread: when sysfs/UPower requests the battery report via UHID_GET_REPORT,
+        // we answer with UHID_GET_REPORT_REPLY so the kernel's capacity read never returns ENODATA.
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4380];
+            loop {
+                match read_file.read(&mut buf) {
+                    Ok(n) if n >= 10 => {
+                        let ev_type = u32::from_ne_bytes(buf[..4].try_into().unwrap_or([0; 4]));
+                        if ev_type == UHID_GET_REPORT {
+                            let req_id = u32::from_ne_bytes(buf[4..8].try_into().unwrap_or([0; 4]));
+                            let current_pct = pct_clone.load(Ordering::Relaxed);
+
+                            let mut reply = UhidGetReportReplyEvent {
+                                event_type: UHID_GET_REPORT_REPLY,
+                                req: UhidGetReportReplyReq {
+                                    id: req_id,
+                                    err: 0,
+                                    size: 2,
+                                    data: [0u8; 4096],
+                                },
+                            };
+                            reply.req.data[0] = 0x01; // Report ID 1
+                            reply.req.data[1] = current_pct;
+
+                            let reply_slice = unsafe {
+                                std::slice::from_raw_parts(
+                                    (&reply as *const UhidGetReportReplyEvent) as *const u8,
+                                    4 + 4 + 2 + 2 + 2, // 14 bytes
+                                )
+                            };
+                            let _ = write_clone.write_all(reply_slice);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            file,
+            current_percentage,
+        })
     }
 
     /// Sends a battery percentage update (0..=100) to the kernel.
     pub fn update_battery(&mut self, percentage: u8) -> Result<(), DriverError> {
         let pct = percentage.min(100);
+        self.current_percentage.store(pct, Ordering::Relaxed);
+
         let mut input_ev = UhidInput2Event {
             event_type: UHID_INPUT2,
             req: UhidInput2Req {

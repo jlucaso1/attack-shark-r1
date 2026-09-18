@@ -397,17 +397,19 @@ fn run_daemon(interval_secs: u64) -> ExitCode {
     println!("Daemon active. Linux kernel, UPower, and KDE Plasma will now reflect the mouse battery.");
 
     let mut last_percentage: Option<u8> = None;
+    let mut initial = true;
 
     loop {
         match AttackSharkR1::open() {
             Ok(mut mouse) => match mouse.get_battery_percentage() {
                 Ok(pct) => {
-                    if last_percentage != Some(pct) {
+                    if last_percentage != Some(pct) || initial {
                         println!("Battery updated: {pct}% (notifying UPower / KDE Plasma)");
-                        if let Err(e) = virtual_device.update_battery(pct) {
-                            eprintln!("Failed to send battery update to kernel: {e}");
-                        }
                         last_percentage = Some(pct);
+                        initial = false;
+                    }
+                    if let Err(e) = virtual_device.update_battery(pct) {
+                        eprintln!("Failed to send battery update to kernel: {e}");
                     }
                 }
                 Err(e) => {
