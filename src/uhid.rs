@@ -107,11 +107,18 @@ pub struct UhidBatteryDevice {
     file: File,
     current_percentage: Arc<AtomicU8>,
     current_charging: Arc<AtomicBool>,
+    is_running: Arc<AtomicBool>,
 }
 
 impl UhidBatteryDevice {
     /// Creates and registers a virtual HID device via `/dev/uhid`.
-    pub fn create(device_name: &str, vendor_id: u32, product_id: u32) -> Result<Self, DriverError> {
+    pub fn create(
+        device_name: &str,
+        vendor_id: u32,
+        product_id: u32,
+        initial_percentage: u8,
+        initial_charging: bool,
+    ) -> Result<Self, DriverError> {
         let path = Path::new(UHID_PATH);
         if !path.exists() {
             return Err(DriverError::Io(io::Error::new(
@@ -172,18 +179,22 @@ impl UhidBatteryDevice {
         file.write_all(raw_slice)
             .map_err(|e| DriverError::Io(io::Error::new(e.kind(), format!("Failed to create UHID device: {e}"))))?;
 
-        let current_percentage = Arc::new(AtomicU8::new(100));
-        let current_charging = Arc::new(AtomicBool::new(false));
+        let current_percentage = Arc::new(AtomicU8::new(initial_percentage.min(100)));
+        let current_charging = Arc::new(AtomicBool::new(initial_charging));
+        let is_running = Arc::new(AtomicBool::new(true));
+
         let pct_clone = Arc::clone(&current_percentage);
         let chg_clone = Arc::clone(&current_charging);
+        let run_clone = Arc::clone(&is_running);
         let mut read_file = file.try_clone().map_err(DriverError::Io)?;
         let mut write_clone = file.try_clone().map_err(DriverError::Io)?;
 
         // Reply to kernel GET_REPORT requests with current battery capacity and state.
         std::thread::spawn(move || {
             let mut buf = [0u8; 4380];
-            loop {
+            while run_clone.load(Ordering::Relaxed) {
                 match read_file.read(&mut buf) {
+                    Ok(0) => break,
                     Ok(n) if n >= 10 => {
                         let ev_type = u32::from_ne_bytes(buf[..4].try_into().unwrap_or([0; 4]));
                         if ev_type == UHID_GET_REPORT {
@@ -220,11 +231,17 @@ impl UhidBatteryDevice {
             }
         });
 
-        Ok(Self {
+        let mut dev = Self {
             file,
             current_percentage,
             current_charging,
-        })
+            is_running,
+        };
+
+        // Send initial report immediately so kernel power supply reflects current state
+        let _ = dev.update_battery(initial_percentage, initial_charging);
+
+        Ok(dev)
     }
 
     /// Sends battery percentage (0..=100) and charging status to the kernel.
@@ -263,6 +280,7 @@ impl UhidBatteryDevice {
 
 impl Drop for UhidBatteryDevice {
     fn drop(&mut self) {
+        self.is_running.store(false, Ordering::Relaxed);
         let destroy_ev = UhidDestroyEvent {
             event_type: UHID_DESTROY,
         };
@@ -273,5 +291,6 @@ impl Drop for UhidBatteryDevice {
             )
         };
         let _ = self.file.write_all(raw_slice);
+        let _ = self.file.flush();
     }
 }

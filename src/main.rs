@@ -62,24 +62,10 @@ fn apply_config_if_present(mouse: &mut AttackSharkR1) {
 fn run_daemon(interval_secs: u64) -> ExitCode {
     println!("Starting Attack Shark R1 daemon (interval: {interval_secs}s)...");
 
-    let mut virtual_device = match UhidBatteryDevice::create("Attack Shark R1", 0x1d57, 0xfa60) {
-        Ok(d) => {
-            println!("Registered virtual power supply on /dev/uhid.");
-            d
-        }
-        Err(e) => {
-            eprintln!("Failed to initialize UHID virtual device: {e}");
-            eprintln!("Make sure /dev/uhid is accessible (check udev rules or run as root).");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    println!("Daemon running. Monitoring mouse every {interval_secs}s.");
-
+    let mut virtual_device: Option<UhidBatteryDevice> = None;
     let mut last_status: Option<attack_shark_r1::BatteryStatus> = None;
     #[cfg(feature = "config")]
     let mut configured = false;
-    let mut initial = true;
 
     loop {
         match AttackSharkR1::open() {
@@ -101,31 +87,52 @@ fn run_daemon(interval_secs: u64) -> ExitCode {
                                 None => true,
                             };
 
-                            if changed || initial {
+                            if changed {
                                 let state_str = if status.is_charging {
                                     "charging"
                                 } else {
                                     "discharging"
                                 };
                                 println!("Battery: {}% [{state_str}]", status.percentage);
-                                if let Err(e) =
-                                    virtual_device.update_battery(status.percentage, status.is_charging)
-                                {
-                                    eprintln!("Failed to send battery update to kernel: {e}");
+
+                                match virtual_device.as_mut() {
+                                    Some(vdev) => {
+                                        if let Err(e) =
+                                            vdev.update_battery(status.percentage, status.is_charging)
+                                        {
+                                            eprintln!("Failed to send battery update to kernel: {e}");
+                                        }
+                                    }
+                                    None => {
+                                        match UhidBatteryDevice::create(
+                                            "Attack Shark R1",
+                                            0x1d57,
+                                            0xfa60,
+                                            status.percentage,
+                                            status.is_charging,
+                                        ) {
+                                            Ok(d) => {
+                                                println!("Registered virtual power supply on /dev/uhid.");
+                                                virtual_device = Some(d);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Failed to create UHID virtual device: {e}");
+                                                eprintln!("Make sure /dev/uhid is accessible (check udev rules or run as root).");
+                                            }
+                                        }
+                                    }
                                 }
+
                                 last_status = Some(status);
-                                initial = false;
                             }
                         }
                         Err(attack_shark_r1::DriverError::Usb(rusb::Error::Timeout)) => {
                             // Mouse is asleep or stationary. Keep previous state.
                         }
-                        Err(attack_shark_r1::DriverError::Usb(rusb::Error::NoDevice)) => {
-                            eprintln!("Mouse disconnected or receiver unplugged.");
-                            break;
-                        }
                         Err(e) => {
-                            eprintln!("USB communication error: {e}");
+                            println!("Mouse disconnected or USB error: {e}");
+                            virtual_device = None;
+                            last_status = None;
                             break;
                         }
                     }
@@ -134,6 +141,11 @@ fn run_daemon(interval_secs: u64) -> ExitCode {
                 }
             }
             Err(_) => {
+                if virtual_device.is_some() {
+                    println!("Mouse disconnected. Removing virtual power supply.");
+                    virtual_device = None;
+                    last_status = None;
+                }
                 #[cfg(feature = "config")]
                 {
                     configured = false;
