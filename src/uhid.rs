@@ -1,0 +1,186 @@
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+
+use crate::error::DriverError;
+
+const UHID_PATH: &str = "/dev/uhid";
+const BUS_USB: u16 = 0x03;
+
+const UHID_DESTROY: u32 = 1;
+const UHID_CREATE2: u32 = 11;
+const UHID_INPUT2: u32 = 12;
+
+/// Standard HID report descriptor for a mouse exposing Battery Strength.
+/// Linux kernel hid-input (`CONFIG_HID_BATTERY_STRENGTH`) will automatically
+/// recognize this descriptor and register a `/sys/class/power_supply/hid-...-battery`
+/// device, which UPower and KDE Plasma pick up seamlessly.
+const BATTERY_REPORT_DESCRIPTOR: &[u8] = &[
+    0x05, 0x01,        // Usage Page (Generic Desktop Ctrls)
+    0x09, 0x02,        // Usage (Mouse)
+    0xa1, 0x01,        // Collection (Application)
+    0x85, 0x01,        //   Report ID (1)
+    0x05, 0x06,        //   Usage Page (Generic Device Controls)
+    0x09, 0x20,        //   Usage (Battery Strength)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x26, 0x64, 0x00,  //   Logical Maximum (100)
+    0x75, 0x08,        //   Report Size (8 bits)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0xc0,              // End Collection
+];
+
+#[repr(C, packed)]
+struct UhidCreate2Req {
+    name: [u8; 128],
+    phys: [u8; 64],
+    uniq: [u8; 64],
+    rd_size: u16,
+    bus: u16,
+    vendor: u32,
+    product: u32,
+    version: u32,
+    country: u32,
+    rd_data: [u8; 4096],
+}
+
+#[repr(C, packed)]
+struct UhidCreate2Event {
+    event_type: u32,
+    req: UhidCreate2Req,
+}
+
+#[repr(C, packed)]
+struct UhidInput2Req {
+    size: u16,
+    data: [u8; 4096],
+}
+
+#[repr(C, packed)]
+struct UhidInput2Event {
+    event_type: u32,
+    req: UhidInput2Req,
+}
+
+#[repr(C, packed)]
+struct UhidDestroyEvent {
+    event_type: u32,
+}
+
+/// A virtual UHID device bridging the mouse battery to Linux power_supply & UPower.
+pub struct UhidBatteryDevice {
+    file: File,
+}
+
+impl UhidBatteryDevice {
+    /// Creates and registers a virtual HID device via `/dev/uhid`.
+    pub fn create(device_name: &str, vendor_id: u32, product_id: u32) -> Result<Self, DriverError> {
+        let path = Path::new(UHID_PATH);
+        if !path.exists() {
+            return Err(DriverError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{UHID_PATH} does not exist. Ensure the 'uhid' kernel module is loaded ('modprobe uhid')."),
+            )));
+        }
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|e| {
+                if e.kind() == io::ErrorKind::PermissionDenied {
+                    DriverError::Io(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "Permission denied opening {UHID_PATH}. Run as root, via systemd, or add KERNEL==\"uhid\", MODE=\"0666\" to udev rules."
+                        ),
+                    ))
+                } else {
+                    DriverError::Io(e)
+                }
+            })?;
+
+        let mut create_ev = UhidCreate2Event {
+            event_type: UHID_CREATE2,
+            req: UhidCreate2Req {
+                name: [0u8; 128],
+                phys: [0u8; 64],
+                uniq: [0u8; 64],
+                rd_size: BATTERY_REPORT_DESCRIPTOR.len() as u16,
+                bus: BUS_USB,
+                vendor: vendor_id,
+                product: product_id,
+                version: 0,
+                country: 0,
+                rd_data: [0u8; 4096],
+            },
+        };
+
+        let name_bytes = device_name.as_bytes();
+        let name_len = name_bytes.len().min(127);
+        create_ev.req.name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+
+        let phys = b"uhid/attack-shark-r1";
+        create_ev.req.phys[..phys.len()].copy_from_slice(phys);
+
+        create_ev.req.rd_data[..BATTERY_REPORT_DESCRIPTOR.len()]
+            .copy_from_slice(BATTERY_REPORT_DESCRIPTOR);
+
+        // Write create event to /dev/uhid
+        let raw_slice = unsafe {
+            std::slice::from_raw_parts(
+                (&create_ev as *const UhidCreate2Event) as *const u8,
+                std::mem::size_of::<UhidCreate2Event>(),
+            )
+        };
+        file.write_all(raw_slice)
+            .map_err(|e| DriverError::Io(io::Error::new(e.kind(), format!("Failed to create UHID device: {e}"))))?;
+
+        Ok(Self { file })
+    }
+
+    /// Sends a battery percentage update (0..=100) to the kernel.
+    pub fn update_battery(&mut self, percentage: u8) -> Result<(), DriverError> {
+        let pct = percentage.min(100);
+        let mut input_ev = UhidInput2Event {
+            event_type: UHID_INPUT2,
+            req: UhidInput2Req {
+                size: 2, // Report ID + 1 byte payload
+                data: [0u8; 4096],
+            },
+        };
+
+        input_ev.req.data[0] = 0x01; // Report ID 1
+        input_ev.req.data[1] = pct;  // Battery percentage (0-100)
+
+        // Only write the relevant slice header (4 bytes type + 2 bytes size + 2 bytes data)
+        let needed_size = 4 + 2 + 2;
+        let raw_slice = unsafe {
+            std::slice::from_raw_parts(
+                (&input_ev as *const UhidInput2Event) as *const u8,
+                needed_size,
+            )
+        };
+
+        self.file
+            .write_all(raw_slice)
+            .map_err(|e| DriverError::Io(io::Error::new(e.kind(), format!("Failed to send UHID battery report: {e}"))))?;
+
+        Ok(())
+    }
+}
+
+impl Drop for UhidBatteryDevice {
+    fn drop(&mut self) {
+        let destroy_ev = UhidDestroyEvent {
+            event_type: UHID_DESTROY,
+        };
+        let raw_slice = unsafe {
+            std::slice::from_raw_parts(
+                (&destroy_ev as *const UhidDestroyEvent) as *const u8,
+                std::mem::size_of::<UhidDestroyEvent>(),
+            )
+        };
+        let _ = self.file.write_all(raw_slice);
+    }
+}

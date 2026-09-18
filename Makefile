@@ -1,6 +1,7 @@
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 RULESDIR ?= /etc/udev/rules.d
+SYSTEMDDIR ?= /etc/systemd/system
 
 all: build
 
@@ -15,13 +16,20 @@ install: build
 	install -m 755 target/release/attack-shark-r1 $(DESTDIR)$(BINDIR)/attack-shark-r1
 	install -d $(DESTDIR)$(RULESDIR)
 	install -m 644 99-attack-shark-r1.rules $(DESTDIR)$(RULESDIR)/99-attack-shark-r1.rules
+	install -d $(DESTDIR)$(SYSTEMDDIR)
+	install -m 644 attack-shark-r1.service $(DESTDIR)$(SYSTEMDDIR)/attack-shark-r1.service
 	udevadm control --reload-rules || true
 	udevadm trigger || true
+	systemctl daemon-reload || true
 
 uninstall:
+	systemctl stop attack-shark-r1 || true
+	systemctl disable attack-shark-r1 || true
 	rm -f $(DESTDIR)$(BINDIR)/attack-shark-r1
 	rm -f $(DESTDIR)$(RULESDIR)/99-attack-shark-r1.rules
+	rm -f $(DESTDIR)$(SYSTEMDDIR)/attack-shark-r1.service
 	udevadm control --reload-rules || true
+	systemctl daemon-reload || true
 
 clean:
 	cargo clean

@@ -165,6 +165,34 @@ attack-shark-r1 --reapply-config
 
 ---
 
+## 🔋 UPower & KDE Plasma Integration
+
+KDE Plasma monitors device batteries through the system **UPower** daemon (`org.freedesktop.UPower`), which reads kernel power supplies registered in `/sys/class/power_supply/`. Because UPower does not allow registering virtual devices via D-Bus directly, `attack-shark-r1` implements a **UHID (User-space HID)** bridge.
+
+### How it works:
+1. `attack-shark-r1 --daemon` creates a virtual HID mouse device via `/dev/uhid` with a standard HID **Battery Strength** descriptor.
+2. The Linux kernel (`CONFIG_HID_BATTERY_STRENGTH=y`) recognizes the descriptor and creates `/sys/class/power_supply/hid-...-battery`.
+3. **UPower** automatically detects the power supply and exposes it on D-Bus.
+4. **KDE Plasma** (PowerDevil and the Battery and Brightness widget) displays the mouse battery natively in your system tray!
+5. The daemon periodically queries the Attack Shark R1 and updates the kernel with fresh battery levels.
+
+### Enabling the UPower Daemon via Systemd:
+```bash
+# 1. Build and install the binary and systemd service:
+sudo make install
+
+# 2. Enable and start the service:
+sudo systemctl enable --now attack-shark-r1.service
+
+# 3. Check UPower status:
+upower -e
+# You should see /org/freedesktop/UPower/devices/mouse_...
+upower -i /org/freedesktop/UPower/devices/mouse_*
+```
+Once active, your Attack Shark R1 mouse battery will appear natively inside KDE Plasma's battery tray and system settings!
+
+---
+
 ## 📄 Udev Rules
 
 To interact with the mouse without root privileges, `99-attack-shark-r1.rules` provides:

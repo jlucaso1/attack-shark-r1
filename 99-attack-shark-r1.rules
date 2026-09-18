@@ -1,3 +1,6 @@
-# Attack Shark R1 udev rules (Wireless 2.4G receiver and wired USB-C)
+# Attack Shark R1 USB permissions (Wireless 2.4G receiver and wired USB-C)
 SUBSYSTEM=="usb", ATTR{idVendor}=="1d57", ATTR{idProduct}=="fa60", MODE="0666"
 SUBSYSTEM=="usb", ATTR{idVendor}=="1d57", ATTR{idProduct}=="fa61", MODE="0666"
+
+# UHID access for user-space virtual battery device (UPower / KDE Plasma integration)
+KERNEL=="uhid", TAG+="uaccess", MODE="0666"

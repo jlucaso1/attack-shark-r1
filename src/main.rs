@@ -68,6 +68,14 @@ struct Cli {
     #[arg(short = 'c', long = "config")]
     config_path: Option<PathBuf>,
 
+    /// Run as a background daemon creating a virtual power_supply via /dev/uhid for UPower & KDE Plasma
+    #[arg(long = "daemon")]
+    daemon: bool,
+
+    /// Daemon polling interval in seconds (default: 30)
+    #[arg(long = "interval", default_value_t = 30)]
+    interval: u64,
+
     /// Reapply all settings from configuration file
     #[arg(long = "reapply-config")]
     reapply_config: bool,
@@ -124,6 +132,10 @@ angle_snap     = {}
             cfg.angle_snap,
         );
         return ExitCode::SUCCESS;
+    }
+
+    if cli.daemon {
+        return run_daemon(cli.interval);
     }
 
     // If no action flags are provided, show usage
@@ -332,4 +344,55 @@ angle_snap     = {}
     }
 
     ExitCode::SUCCESS
+}
+
+fn run_daemon(interval_secs: u64) -> ExitCode {
+    use attack_shark_r1::UhidBatteryDevice;
+
+    println!("Starting Attack Shark R1 UPower / KDE battery daemon (interval: {interval_secs}s)...");
+
+    let mut virtual_device = match UhidBatteryDevice::create("Attack Shark R1", 0x1d57, 0xfa60) {
+        Ok(d) => {
+            println!("Registered virtual power supply device in Linux kernel via /dev/uhid!");
+            d
+        }
+        Err(e) => {
+            eprintln!("Failed to initialize UHID virtual device: {e}");
+            eprintln!();
+            eprintln!("Note on permissions:");
+            eprintln!("  1. Run with sudo: 'sudo attack-shark-r1 --daemon'");
+            eprintln!("  2. Or enable the systemd service: 'sudo systemctl enable --now attack-shark-r1'");
+            eprintln!("  3. Or add KERNEL==\"uhid\", TAG+=\"uaccess\", MODE=\"0666\" to /etc/udev/rules.d/99-attack-shark-r1.rules");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("Daemon active. Linux kernel, UPower, and KDE Plasma will now reflect the mouse battery.");
+
+    let mut last_percentage: Option<u8> = None;
+
+    loop {
+        match AttackSharkR1::open() {
+            Ok(mut mouse) => match mouse.get_battery_percentage() {
+                Ok(pct) => {
+                    if last_percentage != Some(pct) {
+                        println!("Battery updated: {pct}% (notifying UPower / KDE Plasma)");
+                        if let Err(e) = virtual_device.update_battery(pct) {
+                            eprintln!("Failed to send battery update to kernel: {e}");
+                        }
+                        last_percentage = Some(pct);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not read battery: {e}");
+                }
+            },
+            Err(_) => {
+                // Mouse is asleep or receiver unplugged
+                last_percentage = None;
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+    }
 }

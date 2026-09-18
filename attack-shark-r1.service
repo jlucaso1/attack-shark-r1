@@ -1,0 +1,13 @@
+[Unit]
+Description=Attack Shark R1 Mouse Battery Daemon (UPower & KDE Plasma Integration)
+Documentation=https://github.com/xb-bx/attack-shark-r1-driver
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/attack-shark-r1 --daemon
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
