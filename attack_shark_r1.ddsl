@@ -1,0 +1,72 @@
+device AttackSharkR1Device {
+    register-address-type: u8,
+    default-access: RW,
+    default-byte-order: LE,
+
+    /// Battery status report received on endpoint 0x83
+    register BatteryReport {
+        address: 0x03,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 5,
+            /// HID Report ID (0x03)
+            field report_id 7:0 -> uint,
+            /// Header byte
+            field header 15:8 -> uint,
+            /// Status byte
+            field status 23:16 -> uint,
+            /// Protocol flags
+            field flags 31:24 -> uint,
+            /// Battery charge raw value divided by 10 (e.g. 9 = 90%)
+            field charge_raw 39:32 -> uint,
+        },
+    },
+
+    /// Polling rate configuration (Feature Report 0x06)
+    register PollingRateConfig {
+        address: 0x06,
+        access: WO,
+        fields: fieldset _ {
+            size-bytes: 9,
+            field report_id 7:0 -> uint,
+            field command 15:8 -> uint,
+            field sub 23:16 -> uint,
+            field rate_raw 39:24 -> uint,
+        },
+    },
+
+    /// Sleep and response times configuration (Feature Report 0x05)
+    register SleepTimesConfig {
+        address: 0x05,
+        access: WO,
+        fields: fieldset _ {
+            size-bytes: 15,
+            field report_id 7:0 -> uint,
+            field command 15:8 -> uint,
+            field sub 23:16 -> uint,
+            field reserved0 31:24 -> uint,
+            field deep_sleep_hi 39:32 -> uint,
+            field deep_sleep_lo 47:40 -> uint,
+            field reserved1 71:48 -> uint,
+            field sleep_time_raw 79:72 -> uint,
+            field key_resp_raw 87:80 -> uint,
+            field flag 95:88 -> uint,
+            field checksum 103:96 -> uint,
+        },
+    },
+
+    /// DPI and sensor features configuration (Feature Report 0x04)
+    register DpiConfig {
+        address: 0x04,
+        access: WO,
+        fields: fieldset _ {
+            size-bytes: 56,
+            field report_id 7:0 -> uint,
+            field command 15:8 -> uint,
+            field sub 23:16 -> uint,
+            field angle_snap 31:24 -> uint,
+            field ripple_control 39:32 -> uint,
+            field active_dpi 199:192 -> uint,
+        },
+    },
+}
