@@ -2,8 +2,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use crate::dpi::{validate_dpi, validate_dpi_stage, DPI_STAGES_COUNT};
+use crate::driver::validate_sleep_times;
 use crate::error::DriverError;
 use crate::protocol::PollingRate;
+
+pub const CONFIG_FILE_NAME: &str = "attack-shark-r1.ini";
+pub const ETC_CONFIG_PATH: &str = "/etc/attack-shark-r1.ini";
+pub const XDG_CONFIG_ENV: &str = "XDG_CONFIG_HOME";
+pub const HOME_ENV: &str = "HOME";
+
+pub const SECTION_GENERAL: &str = "[general]";
+pub const KEY_POLLING_RATE: &str = "polling_rate";
+pub const KEY_SLEEP_TIME: &str = "sleep_time";
+pub const KEY_DEEP_SLEEP_TIME: &str = "deep_sleep_time";
+pub const KEY_KEY_RESPONSE_TIME: &str = "key_response_time";
+pub const KEY_ACTIVE_DPI: &str = "active_dpi";
+pub const KEY_DPIS: &str = "dpis";
+pub const KEY_RIPPLE_CONTROL: &str = "ripple_control";
+pub const KEY_ANGLE_SNAP: &str = "angle_snap";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MouseConfig {
@@ -11,7 +28,7 @@ pub struct MouseConfig {
     pub sleep_time: f64,
     pub deep_sleep_time: u8,
     pub key_response_time: u8,
-    pub dpis: [u32; 6],
+    pub dpis: [u32; DPI_STAGES_COUNT],
     pub active_dpi: u8,
     pub ripple_control: bool,
     pub angle_snap: bool,
@@ -34,22 +51,14 @@ impl Default for MouseConfig {
 
 impl MouseConfig {
     pub fn validate(&self) -> Result<(), DriverError> {
-        if self.sleep_time < 0.5 || self.sleep_time > 30.0 {
-            return Err(DriverError::InvalidSleepTime(self.sleep_time));
-        }
-        if self.deep_sleep_time < 1 || self.deep_sleep_time > 60 {
-            return Err(DriverError::InvalidDeepSleepTime(self.deep_sleep_time));
-        }
-        if self.key_response_time < 4 || self.key_response_time > 50 || self.key_response_time % 2 != 0 {
-            return Err(DriverError::InvalidKeyResponseTime(self.key_response_time));
-        }
-        if self.active_dpi < 1 || self.active_dpi > 6 {
-            return Err(DriverError::InvalidDpiStage(self.active_dpi));
-        }
+        validate_sleep_times(
+            self.sleep_time,
+            self.deep_sleep_time,
+            self.key_response_time,
+        )?;
+        validate_dpi_stage(self.active_dpi)?;
         for &dpi in &self.dpis {
-            if !(100..=18000).contains(&dpi) || dpi % 100 != 0 {
-                return Err(DriverError::InvalidDpi(dpi));
-            }
+            validate_dpi(dpi)?;
         }
         Ok(())
     }
@@ -63,21 +72,21 @@ impl MouseConfig {
             }
         }
 
-        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-            let p = PathBuf::from(xdg).join("attack-shark-r1.ini");
+        if let Ok(xdg) = std::env::var(XDG_CONFIG_ENV) {
+            let p = PathBuf::from(xdg).join(CONFIG_FILE_NAME);
             if p.exists() {
                 return Some(p);
             }
         }
 
-        if let Ok(home) = std::env::var("HOME") {
-            let p = PathBuf::from(home).join(".config/attack-shark-r1.ini");
+        if let Ok(home) = std::env::var(HOME_ENV) {
+            let p = PathBuf::from(home).join(".config").join(CONFIG_FILE_NAME);
             if p.exists() {
                 return Some(p);
             }
         }
 
-        let etc = PathBuf::from("/etc/attack-shark-r1.ini");
+        let etc = PathBuf::from(ETC_CONFIG_PATH);
         if etc.exists() {
             return Some(etc);
         }
@@ -109,33 +118,33 @@ impl MouseConfig {
             let val = val.split(';').next().unwrap_or(val).trim();
 
             match key {
-                "polling_rate" => {
+                KEY_POLLING_RATE => {
                     let hz: u32 = val
                         .parse()
                         .map_err(|_| DriverError::Config(format!("Invalid polling rate '{val}' at line {}", line_num + 1)))?;
                     cfg.polling_rate = PollingRate::try_from(hz)?;
                 }
-                "sleep_time" => {
+                KEY_SLEEP_TIME => {
                     cfg.sleep_time = f64::from_str(val)
                         .map_err(|_| DriverError::Config(format!("Invalid sleep_time '{val}' at line {}", line_num + 1)))?;
                 }
-                "deep_sleep_time" => {
+                KEY_DEEP_SLEEP_TIME => {
                     cfg.deep_sleep_time = u8::from_str(val)
                         .map_err(|_| DriverError::Config(format!("Invalid deep_sleep_time '{val}' at line {}", line_num + 1)))?;
                 }
-                "key_response_time" => {
+                KEY_KEY_RESPONSE_TIME => {
                     cfg.key_response_time = u8::from_str(val)
                         .map_err(|_| DriverError::Config(format!("Invalid key_response_time '{val}' at line {}", line_num + 1)))?;
                 }
-                "active_dpi" => {
+                KEY_ACTIVE_DPI => {
                     cfg.active_dpi = u8::from_str(val)
                         .map_err(|_| DriverError::Config(format!("Invalid active_dpi '{val}' at line {}", line_num + 1)))?;
                 }
-                "dpis" => {
+                KEY_DPIS => {
                     let parts: Vec<&str> = val.split_whitespace().collect();
-                    if parts.len() != 6 {
+                    if parts.len() != DPI_STAGES_COUNT {
                         return Err(DriverError::Config(format!(
-                            "Expected exactly 6 DPI values in 'dpis', found {} at line {}",
+                            "Expected exactly {DPI_STAGES_COUNT} DPI values in '{KEY_DPIS}', found {} at line {}",
                             parts.len(),
                             line_num + 1
                         )));
@@ -147,11 +156,11 @@ impl MouseConfig {
                         cfg.dpis[i] = dpi;
                     }
                 }
-                "ripple_control" => {
+                KEY_RIPPLE_CONTROL => {
                     cfg.ripple_control = bool::from_str(val)
                         .map_err(|_| DriverError::Config(format!("Invalid ripple_control '{val}' at line {}", line_num + 1)))?;
                 }
-                "angle_snap" => {
+                KEY_ANGLE_SNAP => {
                     cfg.angle_snap = bool::from_str(val)
                         .map_err(|_| DriverError::Config(format!("Invalid angle_snap '{val}' at line {}", line_num + 1)))?;
                 }
@@ -173,15 +182,15 @@ impl MouseConfig {
             .join(" ");
 
         let content = format!(
-            "[general]\n\
-             polling_rate = {}\n\
-             sleep_time = {}\n\
-             deep_sleep_time = {}\n\
-             key_response_time = {}\n\
-             dpis = {}\n\
-             active_dpi = {}\n\
-             ripple_control = {}\n\
-             angle_snap = {}\n",
+            "{SECTION_GENERAL}\n\
+             {KEY_POLLING_RATE} = {}\n\
+             {KEY_SLEEP_TIME} = {}\n\
+             {KEY_DEEP_SLEEP_TIME} = {}\n\
+             {KEY_KEY_RESPONSE_TIME} = {}\n\
+             {KEY_DPIS} = {}\n\
+             {KEY_ACTIVE_DPI} = {}\n\
+             {KEY_RIPPLE_CONTROL} = {}\n\
+             {KEY_ANGLE_SNAP} = {}\n",
             self.polling_rate.as_hz(),
             self.sleep_time,
             self.deep_sleep_time,

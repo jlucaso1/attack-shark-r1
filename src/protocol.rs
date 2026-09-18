@@ -13,6 +13,45 @@ pub const PRODUCT_ID_WIRED: u16 = 0xfa61;
 pub const INTERFACE_NUMBER: u8 = 2;
 pub const ENDPOINT_INTERRUPT_IN: u8 = 0x83;
 
+pub const REGISTER_BATTERY: u8 = 0x03;
+pub const REGISTER_DPI: u8 = 0x04;
+pub const REGISTER_SLEEP_TIMES: u8 = 0x05;
+pub const REGISTER_POLLING_RATE: u8 = 0x06;
+
+pub const DEVICE_ID_ATTACK_SHARK_R1: u8 = 0x10;
+pub const BATTERY_STATUS_READY: u8 = 0x40;
+pub const BATTERY_FLAG_DISCHARGING: u8 = 0x01;
+pub const BATTERY_FLAG_CHARGING_WIRED: u8 = 0x02;
+pub const BATTERY_FLAG_CHARGING_WIRELESS: u8 = 0x03;
+pub const BATTERY_FLAG_CHARGING_DOCK: u8 = 0x80;
+pub const BATTERY_MAX_TENTHS: u8 = 10;
+pub const MIN_BATTERY_REPORT_LEN: usize = 5;
+pub const INTERRUPT_BUFFER_LEN: usize = 64;
+
+pub const USB_REQ_TYPE_IN_DEVICE: u8 = 0x80;
+pub const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;
+pub const USB_DESC_TYPE_DEVICE: u16 = 0x0100;
+pub const USB_DEVICE_DESC_LEN: usize = 18;
+
+pub const USB_REQ_TYPE_CLASS_INTERFACE_OUT: u8 = 0x21;
+pub const USB_HID_REQ_SET_REPORT: u8 = 0x09;
+pub const USB_HID_REPORT_TYPE_FEATURE: u16 = 0x0300;
+
+pub const TIMEOUT_INTERRUPT: Duration = Duration::from_millis(1500);
+pub const TIMEOUT_CONTROL: Duration = Duration::from_millis(1500);
+pub const TIMEOUT_LIVENESS: Duration = Duration::from_millis(200);
+pub const TIMEOUT_WIRED_LIVENESS: Duration = Duration::from_millis(500);
+pub const TIMEOUT_ACK: Duration = Duration::from_millis(800);
+
+#[cfg(feature = "polling-rate")]
+pub const POLLING_RATE_125_HZ: u32 = 125;
+#[cfg(feature = "polling-rate")]
+pub const POLLING_RATE_250_HZ: u32 = 250;
+#[cfg(feature = "polling-rate")]
+pub const POLLING_RATE_500_HZ: u32 = 500;
+#[cfg(feature = "polling-rate")]
+pub const POLLING_RATE_1000_HZ: u32 = 1000;
+
 // Compile DDSL hardware register specification.
 device_driver::compile!(
     manifest: "attack_shark_r1.ddsl"
@@ -33,10 +72,10 @@ pub enum PollingRate {
 impl PollingRate {
     pub fn as_hz(&self) -> u32 {
         match self {
-            PollingRate::Hz125 => 125,
-            PollingRate::Hz250 => 250,
-            PollingRate::Hz500 => 500,
-            PollingRate::Hz1000 => 1000,
+            PollingRate::Hz125 => POLLING_RATE_125_HZ,
+            PollingRate::Hz250 => POLLING_RATE_250_HZ,
+            PollingRate::Hz500 => POLLING_RATE_500_HZ,
+            PollingRate::Hz1000 => POLLING_RATE_1000_HZ,
         }
     }
 }
@@ -47,10 +86,10 @@ impl TryFrom<u32> for PollingRate {
 
     fn try_from(val: u32) -> Result<Self, Self::Error> {
         match val {
-            125 => Ok(PollingRate::Hz125),
-            250 => Ok(PollingRate::Hz250),
-            500 => Ok(PollingRate::Hz500),
-            1000 => Ok(PollingRate::Hz1000),
+            POLLING_RATE_125_HZ => Ok(PollingRate::Hz125),
+            POLLING_RATE_250_HZ => Ok(PollingRate::Hz250),
+            POLLING_RATE_500_HZ => Ok(PollingRate::Hz500),
+            POLLING_RATE_1000_HZ => Ok(PollingRate::Hz1000),
             other => Err(DriverError::InvalidPollingRate(other)),
         }
     }
@@ -91,6 +130,20 @@ impl UsbTransport {
     pub fn is_wired(&self) -> bool {
         self.is_wired
     }
+
+    /// Probes the USB connection to verify the device is still physically connected.
+    pub fn check_liveness(&mut self, timeout: Duration) -> Result<(), DriverError> {
+        let mut desc_buf = [0u8; USB_DEVICE_DESC_LEN];
+        self.handle.read_control(
+            USB_REQ_TYPE_IN_DEVICE,
+            USB_REQ_GET_DESCRIPTOR,
+            USB_DESC_TYPE_DEVICE,
+            0,
+            &mut desc_buf,
+            timeout,
+        )?;
+        Ok(())
+    }
 }
 
 impl Drop for UsbTransport {
@@ -115,32 +168,43 @@ impl RegisterInterface for UsbTransport {
         _metadata: &FieldsetMetadata,
     ) -> Result<(), Self::Error> {
         match address {
-            0x03 => {
+            REGISTER_BATTERY => {
                 if !self.is_wired {
-                    let mut buf = [0u8; 64];
-                    let read_len = self.handle.read_interrupt(
+                    let mut buf = [0u8; INTERRUPT_BUFFER_LEN];
+                    let read_len = match self.handle.read_interrupt(
                         ENDPOINT_INTERRUPT_IN,
                         &mut buf,
-                        Duration::from_millis(1500),
-                    )?;
+                        TIMEOUT_INTERRUPT,
+                    ) {
+                        Ok(n) => n,
+                        Err(rusb::Error::Timeout) => {
+                            // Dongle received no packet over RF (mouse is asleep).
+                            // Verify that the dongle itself is still connected to USB.
+                            self.check_liveness(TIMEOUT_LIVENESS)?;
+                            return Err(DriverError::Usb(rusb::Error::Timeout));
+                        }
+                        Err(e) => return Err(DriverError::Usb(e)),
+                    };
                     data.fill(0);
-                    if read_len >= 5 {
+                    if read_len >= MIN_BATTERY_REPORT_LEN {
                         let copy_len = read_len.min(data.len());
                         data[..copy_len].copy_from_slice(&buf[..copy_len]);
                     } else {
                         return Err(DriverError::Protocol(format!(
-                            "Expected at least 5 bytes on EP 0x83, got {}",
-                            read_len
+                            "Expected at least {MIN_BATTERY_REPORT_LEN} bytes on EP 0x{ENDPOINT_INTERRUPT_IN:02x}, got {read_len}"
                         )));
                     }
                 } else {
+                    // Verify that the wired USB mouse is still physically connected.
+                    self.check_liveness(TIMEOUT_WIRED_LIVENESS)?;
+
                     data.fill(0);
-                    if data.len() >= 5 {
-                        data[0] = 0x03;
-                        data[1] = 0x10;
-                        data[2] = 0x40;
-                        data[3] = 0x02; // Charging
-                        data[4] = 10;   // 100%
+                    if data.len() >= MIN_BATTERY_REPORT_LEN {
+                        data[0] = REGISTER_BATTERY;
+                        data[1] = DEVICE_ID_ATTACK_SHARK_R1;
+                        data[2] = BATTERY_STATUS_READY;
+                        data[3] = BATTERY_FLAG_CHARGING_WIRED;
+                        data[4] = BATTERY_MAX_TENTHS;
                     }
                 }
                 Ok(())
@@ -157,23 +221,23 @@ impl RegisterInterface for UsbTransport {
         data: &mut [u8],
         _metadata: &FieldsetMetadata,
     ) -> Result<(), Self::Error> {
-        let w_value = (0x0300) | (address as u16);
+        let w_value = USB_HID_REPORT_TYPE_FEATURE | (address as u16);
         self.handle.write_control(
-            0x21,
-            0x09,
+            USB_REQ_TYPE_CLASS_INTERFACE_OUT,
+            USB_HID_REQ_SET_REPORT,
             w_value,
             INTERFACE_NUMBER as u16,
             data,
-            Duration::from_millis(1500),
+            TIMEOUT_CONTROL,
         )?;
 
-        // Wireless mouse confirms writes on interrupt endpoint 0x83
+        // Wireless mouse confirms writes on interrupt endpoint
         if !self.is_wired {
-            let mut ack_buf = [0u8; 5];
+            let mut ack_buf = [0u8; MIN_BATTERY_REPORT_LEN];
             let _ = self.handle.read_interrupt(
                 ENDPOINT_INTERRUPT_IN,
                 &mut ack_buf,
-                Duration::from_millis(800),
+                TIMEOUT_ACK,
             );
         }
 

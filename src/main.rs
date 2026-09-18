@@ -3,12 +3,33 @@ use std::time::Duration;
 
 #[cfg(feature = "config")]
 use attack_shark_r1::MouseConfig;
-use attack_shark_r1::{AttackSharkR1, UhidBatteryDevice};
+use attack_shark_r1::{
+    AttackSharkR1, BatteryStatus, DriverError, UhidBatteryDevice, DEVICE_NAME,
+    PRODUCT_ID_WIRED, PRODUCT_ID_WIRELESS, VENDOR_ID,
+};
+
+const CLI_FLAG_QUERY_CHARGE: &str = "-query-charge";
+const CLI_FLAG_BATTERY: &str = "--battery";
+const CLI_FLAG_BATTERY_SHORT: &str = "-b";
+const CLI_FLAG_HELP: &str = "--help";
+const CLI_FLAG_HELP_SHORT: &str = "-h";
+
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 5;
+const STATE_CHARGING: &str = "charging";
+const STATE_DISCHARGING: &str = "discharging";
+
+fn is_battery_query_arg(arg: &str) -> bool {
+    arg == CLI_FLAG_QUERY_CHARGE || arg == CLI_FLAG_BATTERY || arg == CLI_FLAG_BATTERY_SHORT
+}
+
+fn is_help_arg(arg: &str) -> bool {
+    arg == CLI_FLAG_HELP || arg == CLI_FLAG_HELP_SHORT
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
-    if args.iter().any(|a| a == "-query-charge" || a == "--battery" || a == "-b") {
+    if args.iter().any(|a| is_battery_query_arg(a)) {
         match AttackSharkR1::open() {
             Ok(mut mouse) => match mouse.get_battery_percentage() {
                 Ok(pct) => {
@@ -27,18 +48,18 @@ fn main() -> ExitCode {
         }
     }
 
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("Attack Shark R1 daemon");
+    if args.iter().any(|a| is_help_arg(a)) {
+        println!("{DEVICE_NAME} daemon");
         println!("Reports battery and charging state to UPower, KDE Plasma, and Waybar.");
         println!();
         println!("Usage:");
         println!("  attack-shark-r1                # Run daemon (default)");
-        println!("  attack-shark-r1 -query-charge  # Print battery percentage");
-        println!("  attack-shark-r1 --help         # Show this help");
+        println!("  attack-shark-r1 {CLI_FLAG_QUERY_CHARGE}  # Print battery percentage");
+        println!("  attack-shark-r1 {CLI_FLAG_HELP}         # Show this help");
         return ExitCode::SUCCESS;
     }
 
-    run_daemon(5)
+    run_daemon(DEFAULT_POLL_INTERVAL_SECS)
 }
 
 #[cfg(feature = "config")]
@@ -60,10 +81,10 @@ fn apply_config_if_present(mouse: &mut AttackSharkR1) {
 }
 
 fn run_daemon(interval_secs: u64) -> ExitCode {
-    println!("Starting Attack Shark R1 daemon (interval: {interval_secs}s)...");
+    println!("Starting {DEVICE_NAME} daemon (interval: {interval_secs}s)...");
 
     let mut virtual_device: Option<UhidBatteryDevice> = None;
-    let mut last_status: Option<attack_shark_r1::BatteryStatus> = None;
+    let mut last_status: Option<BatteryStatus> = None;
     #[cfg(feature = "config")]
     let mut configured = false;
 
@@ -89,9 +110,9 @@ fn run_daemon(interval_secs: u64) -> ExitCode {
 
                             if changed {
                                 let state_str = if status.is_charging {
-                                    "charging"
+                                    STATE_CHARGING
                                 } else {
-                                    "discharging"
+                                    STATE_DISCHARGING
                                 };
                                 println!("Battery: {}% [{state_str}]", status.percentage);
 
@@ -104,10 +125,15 @@ fn run_daemon(interval_secs: u64) -> ExitCode {
                                         }
                                     }
                                     None => {
+                                        let pid = if mouse.is_wired() {
+                                            PRODUCT_ID_WIRED
+                                        } else {
+                                            PRODUCT_ID_WIRELESS
+                                        };
                                         match UhidBatteryDevice::create(
-                                            "Attack Shark R1",
-                                            0x1d57,
-                                            0xfa60,
+                                            DEVICE_NAME,
+                                            VENDOR_ID as u32,
+                                            pid as u32,
                                             status.percentage,
                                             status.is_charging,
                                         ) {
@@ -126,7 +152,7 @@ fn run_daemon(interval_secs: u64) -> ExitCode {
                                 last_status = Some(status);
                             }
                         }
-                        Err(attack_shark_r1::DriverError::Usb(rusb::Error::Timeout)) => {
+                        Err(DriverError::Usb(rusb::Error::Timeout)) => {
                             // Mouse is asleep or stationary. Keep previous state.
                         }
                         Err(e) => {
@@ -156,3 +182,4 @@ fn run_daemon(interval_secs: u64) -> ExitCode {
         std::thread::sleep(Duration::from_secs(interval_secs));
     }
 }
+

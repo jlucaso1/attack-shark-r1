@@ -1,8 +1,16 @@
 use crate::error::DriverError;
 
+pub const DPI_MIN: u32 = 100;
+pub const DPI_MAX: u32 = 18000;
+pub const DPI_STEP: u32 = 100;
+pub const DPI_TABLE_ENTRIES: usize = 180;
+pub const DPI_STAGES_COUNT: usize = 6;
+pub const DPI_STAGE_MIN: u8 = 1;
+pub const DPI_STAGE_MAX: u8 = 6;
+
 /// Precomputed hardware DPI mapping table for 100 to 18000 DPI (step 100).
 /// Indices correspond to `(dpi / 100) - 1`.
-pub const DPI_LOOKUP_TABLE: [u8; 180] = [
+pub const DPI_LOOKUP_TABLE: [u8; DPI_TABLE_ENTRIES] = [
     0x02, 0x04, 0x06, 0x09, 0x0b, 0x0e, 0x10, 0x12, 0x15, 0x17,
     0x19, 0x1c, 0x1e, 0x20, 0x23, 0x25, 0x27, 0x2a, 0x2c, 0x2f,
     0x31, 0x33, 0x36, 0x38, 0x3a, 0x3d, 0x3f, 0x41, 0x44, 0x46,
@@ -23,12 +31,28 @@ pub const DPI_LOOKUP_TABLE: [u8; 180] = [
     0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xcf, 0xd0, 0xd1, 0xd2, 0xd3,
 ];
 
+/// Validates that a DPI value is supported by hardware (100..=18000, divisible by 100).
+pub fn validate_dpi(dpi: u32) -> Result<(), DriverError> {
+    if !(DPI_MIN..=DPI_MAX).contains(&dpi) || !dpi.is_multiple_of(DPI_STEP) {
+        Err(DriverError::InvalidDpi(dpi))
+    } else {
+        Ok(())
+    }
+}
+
+/// Validates that a DPI stage index is valid (1..=6).
+pub fn validate_dpi_stage(stage: u8) -> Result<(), DriverError> {
+    if !(DPI_STAGE_MIN..=DPI_STAGE_MAX).contains(&stage) {
+        Err(DriverError::InvalidDpiStage(stage))
+    } else {
+        Ok(())
+    }
+}
+
 /// Converts a DPI value (100..=18000, divisible by 100) to its protocol byte code.
 pub fn dpi_to_byte(dpi: u32) -> Result<u8, DriverError> {
-    if !(100..=18000).contains(&dpi) || dpi % 100 != 0 {
-        return Err(DriverError::InvalidDpi(dpi));
-    }
-    let index = (dpi / 100 - 1) as usize;
+    validate_dpi(dpi)?;
+    let index = (dpi / DPI_STEP - 1) as usize;
     Ok(DPI_LOOKUP_TABLE[index])
 }
 
