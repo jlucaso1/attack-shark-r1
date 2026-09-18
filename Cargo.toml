@@ -10,11 +10,14 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 rusb = "0.9"
 device-driver = { version = "2.1.1", features = ["macros"] }
-clap = { version = "4.5", features = ["derive"] }
-rust-ini = "0.21"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2.0"
+usage = { package = "usage-rs", version = "6", default-features = false, features = ["help"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
 
 [lib]
 name = "attack_shark_r1"

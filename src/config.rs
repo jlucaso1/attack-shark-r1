@@ -1,13 +1,11 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-
-use ini::Ini;
-use serde::{Deserialize, Serialize};
 
 use crate::error::DriverError;
 use crate::protocol::PollingRate;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MouseConfig {
     pub polling_rate: PollingRate,
     pub sleep_time: f64,
@@ -87,94 +85,152 @@ impl MouseConfig {
         None
     }
 
-    /// Loads configuration from an INI file.
+    /// Loads configuration from an INI file without external dependencies.
     pub fn load_from_file(path: &Path) -> Result<Self, DriverError> {
-        let conf = Ini::load_from_file(path)
-            .map_err(|e| DriverError::Config(format!("Failed to parse INI file {}: {e}", path.display())))?;
+        let content = fs::read_to_string(path)
+            .map_err(|e| DriverError::Config(format!("Failed to read INI file {}: {e}", path.display())))?;
 
         let mut cfg = MouseConfig::default();
-        let section = conf.general_section();
 
-        if let Some(val) = section.get("polling_rate") {
-            let hz: u32 = val
-                .trim()
-                .parse()
-                .map_err(|_| DriverError::Config(format!("Invalid polling rate in config: {val}")))?;
-            cfg.polling_rate = PollingRate::try_from(hz)?;
-        }
-
-        if let Some(val) = section.get("sleep_time") {
-            cfg.sleep_time = f64::from_str(val.trim())
-                .map_err(|_| DriverError::Config(format!("Invalid sleep_time in config: {val}")))?;
-        }
-
-        if let Some(val) = section.get("deep_sleep_time") {
-            cfg.deep_sleep_time = u8::from_str(val.trim())
-                .map_err(|_| DriverError::Config(format!("Invalid deep_sleep_time in config: {val}")))?;
-        }
-
-        if let Some(val) = section.get("key_response_time") {
-            cfg.key_response_time = u8::from_str(val.trim())
-                .map_err(|_| DriverError::Config(format!("Invalid key_response_time in config: {val}")))?;
-        }
-
-        if let Some(val) = section.get("active_dpi") {
-            cfg.active_dpi = u8::from_str(val.trim())
-                .map_err(|_| DriverError::Config(format!("Invalid active_dpi in config: {val}")))?;
-        }
-
-        if let Some(val) = section.get("dpis") {
-            let parts: Vec<&str> = val.split_whitespace().collect();
-            if parts.len() != 6 {
-                return Err(DriverError::Config(format!(
-                    "Expected exactly 6 DPI values in 'dpis', found {}",
-                    parts.len()
-                )));
+        for (line_num, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            // Skip empty lines, section headers, and comments (# or ;)
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') || trimmed.starts_with('[') {
+                continue;
             }
-            for (i, p) in parts.iter().enumerate() {
-                let dpi: u32 = p
-                    .parse()
-                    .map_err(|_| DriverError::Config(format!("Invalid DPI number '{p}'")))?;
-                cfg.dpis[i] = dpi;
+
+            let (key, val) = match trimmed.split_once('=') {
+                Some((k, v)) => (k.trim(), v.trim()),
+                None => continue,
+            };
+
+            // Remove inline comments if any
+            let val = val.split('#').next().unwrap_or(val);
+            let val = val.split(';').next().unwrap_or(val).trim();
+
+            match key {
+                "polling_rate" => {
+                    let hz: u32 = val
+                        .parse()
+                        .map_err(|_| DriverError::Config(format!("Invalid polling rate '{val}' at line {}", line_num + 1)))?;
+                    cfg.polling_rate = PollingRate::try_from(hz)?;
+                }
+                "sleep_time" => {
+                    cfg.sleep_time = f64::from_str(val)
+                        .map_err(|_| DriverError::Config(format!("Invalid sleep_time '{val}' at line {}", line_num + 1)))?;
+                }
+                "deep_sleep_time" => {
+                    cfg.deep_sleep_time = u8::from_str(val)
+                        .map_err(|_| DriverError::Config(format!("Invalid deep_sleep_time '{val}' at line {}", line_num + 1)))?;
+                }
+                "key_response_time" => {
+                    cfg.key_response_time = u8::from_str(val)
+                        .map_err(|_| DriverError::Config(format!("Invalid key_response_time '{val}' at line {}", line_num + 1)))?;
+                }
+                "active_dpi" => {
+                    cfg.active_dpi = u8::from_str(val)
+                        .map_err(|_| DriverError::Config(format!("Invalid active_dpi '{val}' at line {}", line_num + 1)))?;
+                }
+                "dpis" => {
+                    let parts: Vec<&str> = val.split_whitespace().collect();
+                    if parts.len() != 6 {
+                        return Err(DriverError::Config(format!(
+                            "Expected exactly 6 DPI values in 'dpis', found {} at line {}",
+                            parts.len(),
+                            line_num + 1
+                        )));
+                    }
+                    for (i, p) in parts.iter().enumerate() {
+                        let dpi: u32 = p
+                            .parse()
+                            .map_err(|_| DriverError::Config(format!("Invalid DPI number '{p}' at line {}", line_num + 1)))?;
+                        cfg.dpis[i] = dpi;
+                    }
+                }
+                "ripple_control" => {
+                    cfg.ripple_control = bool::from_str(val)
+                        .map_err(|_| DriverError::Config(format!("Invalid ripple_control '{val}' at line {}", line_num + 1)))?;
+                }
+                "angle_snap" => {
+                    cfg.angle_snap = bool::from_str(val)
+                        .map_err(|_| DriverError::Config(format!("Invalid angle_snap '{val}' at line {}", line_num + 1)))?;
+                }
+                _ => {}
             }
-        }
-
-        if let Some(val) = section.get("ripple_control") {
-            cfg.ripple_control = bool::from_str(val.trim())
-                .map_err(|_| DriverError::Config(format!("Invalid ripple_control in config: {val}")))?;
-        }
-
-        if let Some(val) = section.get("angle_snap") {
-            cfg.angle_snap = bool::from_str(val.trim())
-                .map_err(|_| DriverError::Config(format!("Invalid angle_snap in config: {val}")))?;
         }
 
         cfg.validate()?;
         Ok(cfg)
     }
 
-    /// Saves configuration to an INI file.
+    /// Saves configuration to an INI file without external dependencies.
     pub fn save_to_file(&self, path: &Path) -> Result<(), DriverError> {
-        let mut conf = Ini::new();
-        conf.with_general_section()
-            .set("polling_rate", self.polling_rate.as_hz().to_string())
-            .set("sleep_time", self.sleep_time.to_string())
-            .set("deep_sleep_time", self.deep_sleep_time.to_string())
-            .set("key_response_time", self.key_response_time.to_string())
-            .set(
-                "dpis",
-                self.dpis
-                    .iter()
-                    .map(|d| d.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )
-            .set("active_dpi", self.active_dpi.to_string())
-            .set("ripple_control", self.ripple_control.to_string())
-            .set("angle_snap", self.angle_snap.to_string());
+        let dpis_str = self
+            .dpis
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
 
-        conf.write_to_file(path)
+        let content = format!(
+            "[general]\n\
+             polling_rate = {}\n\
+             sleep_time = {}\n\
+             deep_sleep_time = {}\n\
+             key_response_time = {}\n\
+             dpis = {}\n\
+             active_dpi = {}\n\
+             ripple_control = {}\n\
+             angle_snap = {}\n",
+            self.polling_rate.as_hz(),
+            self.sleep_time,
+            self.deep_sleep_time,
+            self.key_response_time,
+            dpis_str,
+            self.active_dpi,
+            self.ripple_control,
+            self.angle_snap,
+        );
+
+        fs::write(path, content)
             .map_err(|e| DriverError::Config(format!("Failed to write config {}: {e}", path.display())))?;
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_parse() {
+        let sample = r#"
+        # Sample config
+        [general]
+        polling_rate = 500
+        sleep_time = 10.5 ; comment
+        deep_sleep_time = 20 # inline comment
+        key_response_time = 8
+        dpis = 400 800 1600 3200 6400 12000
+        active_dpi = 4
+        ripple_control = true
+        angle_snap = true
+        "#;
+
+        let tmp = std::env::temp_dir().join("test_attack_shark_r1.ini");
+        fs::write(&tmp, sample).unwrap();
+
+        let cfg = MouseConfig::load_from_file(&tmp).unwrap();
+        assert_eq!(cfg.polling_rate, PollingRate::Hz500);
+        assert_eq!(cfg.sleep_time, 10.5);
+        assert_eq!(cfg.deep_sleep_time, 20);
+        assert_eq!(cfg.key_response_time, 8);
+        assert_eq!(cfg.dpis, [400, 800, 1600, 3200, 6400, 12000]);
+        assert_eq!(cfg.active_dpi, 4);
+        assert!(cfg.ripple_control);
+        assert!(cfg.angle_snap);
+
+        let _ = fs::remove_file(tmp);
+    }
+}
+

@@ -1,105 +1,114 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{ArgAction, Parser};
+use usage::Cli;
 
 use attack_shark_r1::{
     AttackSharkR1, MouseConfig, PollingRate,
 };
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "attack-shark-r1",
-    author = "jlucaso",
-    version = "0.1.0",
-    about = "High-performance Rust driver and CLI for Attack Shark R1 mouse",
-    long_about = "Fast, typed Linux driver for Attack Shark R1 wireless and wired mouse.\nPowered by Rust and device-driver."
-)]
-struct Cli {
+/// High-performance typed Linux driver and CLI for the Attack Shark R1 wireless and wired mouse.
+/// Powered by Rust and device-driver.
+#[derive(Cli, Debug)]
+#[usage(bin = "attack-shark-r1", version = "0.1.0")]
+struct Args {
     /// Query and output current battery charge percentage (e.g. 90)
-    #[arg(short = 'b', long = "battery", alias = "query-charge")]
+    #[usage(short = 'b', long, alias = "query-charge")]
     battery: bool,
 
-    /// Compatibility flag for old driver: -query-charge
-    #[arg(short = 'q', long = "query-charge-alt", action = ArgAction::SetTrue, hide = true)]
-    query_charge_alt: bool,
-
     /// Output detailed status in JSON format (useful for Waybar, Polybar, etc.)
-    #[arg(long = "json")]
+    #[usage(long)]
     json: bool,
 
     /// Print comprehensive human-readable device status
-    #[arg(short = 's', long = "status")]
+    #[usage(short = 's', long)]
     status: bool,
 
     /// Set polling rate in Hz (125, 250, 500, 1000)
-    #[arg(short = 'p', long = "polling-rate", value_parser = parse_polling_rate)]
-    polling_rate: Option<PollingRate>,
+    #[usage(short = 'p', long = "polling-rate")]
+    polling_rate: Option<u32>,
 
     /// Set active DPI stage (1-6)
-    #[arg(long = "active-dpi", value_parser = clap::value_parser!(u8).range(1..=6))]
+    #[usage(long = "active-dpi")]
     active_dpi: Option<u8>,
 
     /// Set DPI stage value in format 'stage=dpi' (e.g. '1=800' or '3=3200')
-    #[arg(long = "dpi", value_name = "STAGE=DPI")]
+    #[usage(long)]
     dpi: Vec<String>,
 
     /// Set sleep time in seconds [0.5, 30.0]
-    #[arg(long = "sleep-time")]
+    #[usage(long = "sleep-time")]
     sleep_time: Option<f64>,
 
     /// Set deep sleep time in minutes [1, 60]
-    #[arg(long = "deep-sleep-time", value_parser = clap::value_parser!(u8).range(1..=60))]
+    #[usage(long = "deep-sleep-time")]
     deep_sleep_time: Option<u8>,
 
     /// Set key response / debounce time in ms [4, 50] (even numbers only)
-    #[arg(long = "key-response-time")]
+    #[usage(long = "key-response-time")]
     key_response_time: Option<u8>,
 
     /// Enable or disable angle snapping (true|false)
-    #[arg(long = "angle-snap")]
+    #[usage(long = "angle-snap")]
     angle_snap: Option<bool>,
 
     /// Enable or disable ripple control (true|false)
-    #[arg(long = "ripple-control")]
+    #[usage(long = "ripple-control")]
     ripple_control: Option<bool>,
 
     /// Custom path to config file (INI)
-    #[arg(short = 'c', long = "config")]
+    #[usage(short = 'c', long = "config")]
     config_path: Option<PathBuf>,
 
     /// Run as a background daemon creating a virtual power_supply via /dev/uhid for UPower & KDE Plasma
-    #[arg(long = "daemon")]
+    #[usage(long)]
     daemon: bool,
 
     /// Daemon polling interval in seconds (default: 30)
-    #[arg(long = "interval", default_value_t = 30)]
+    #[usage(long, default = "30")]
     interval: u64,
 
     /// Reapply all settings from configuration file
-    #[arg(long = "reapply-config")]
+    #[usage(long = "reapply-config")]
     reapply_config: bool,
 
     /// Generate default configuration file to stdout
-    #[arg(long = "generate-config")]
+    #[usage(long = "generate-config")]
     generate_config: bool,
 }
 
-fn parse_polling_rate(s: &str) -> Result<PollingRate, String> {
-    let hz: u32 = s.parse().map_err(|_| "Must be a number".to_string())?;
-    PollingRate::try_from(hz).map_err(|e| e.to_string())
-}
-
 fn main() -> ExitCode {
-    // Check if called with legacy -query-charge single-dash flag
-    let mut args: Vec<String> = std::env::args().collect();
-    for arg in &mut args {
-        if arg == "-query-charge" {
-            *arg = "--battery".to_string();
-        }
-    }
+    // Intercept legacy single-dash -query-charge or normalize args
+    let raw_args: Vec<std::ffi::OsString> = std::env::args_os()
+        .map(|arg| {
+            if arg == "-query-charge" {
+                std::ffi::OsString::from("--battery")
+            } else {
+                arg
+            }
+        })
+        .collect();
 
-    let cli = Cli::parse_from(args);
+    let argv_refs: Vec<&std::ffi::OsStr> = raw_args.iter().map(|s| s.as_os_str()).collect();
+
+    let cli = match Args::parse_from_argv(&argv_refs) {
+        Ok(c) => c,
+        Err(usage::Error::Version { .. }) => {
+            println!("attack-shark-r1 0.1.0");
+            return ExitCode::SUCCESS;
+        }
+        Err(usage::Error::Help { cmd, long }) => {
+            if let Some(help) = Args::render_help(cmd, long) {
+                print!("{help}");
+            }
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            let msg = Args::render_failure(&argv_refs, &e);
+            eprint!("{msg}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     if cli.generate_config {
         let cfg = MouseConfig::default();
@@ -140,7 +149,6 @@ angle_snap     = {}
 
     // If no action flags are provided, show usage
     let has_action = cli.battery
-        || cli.query_charge_alt
         || cli.json
         || cli.status
         || cli.polling_rate.is_some()
@@ -200,7 +208,14 @@ angle_snap     = {}
     }
 
     // 2. Adjust individual settings if passed
-    if let Some(rate) = cli.polling_rate {
+    if let Some(rate_hz) = cli.polling_rate {
+        let rate = match PollingRate::try_from(rate_hz) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Invalid polling rate: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
         if let Err(e) = mouse.set_polling_rate(rate) {
             eprintln!("Failed to set polling rate: {e}");
             return ExitCode::FAILURE;
@@ -209,7 +224,6 @@ angle_snap     = {}
     }
 
     if cli.sleep_time.is_some() || cli.deep_sleep_time.is_some() || cli.key_response_time.is_some() {
-        // Load defaults or current config base
         let mut base_cfg = MouseConfig::default();
         if let Some(p) = MouseConfig::find_config_file(cli.config_path.as_deref().and_then(|p| p.to_str())) {
             if let Ok(c) = MouseConfig::load_from_file(&p) {
@@ -251,6 +265,10 @@ angle_snap     = {}
             }
         }
         if let Some(ad) = cli.active_dpi {
+            if !(1..=6).contains(&ad) {
+                eprintln!("Invalid DPI stage '{ad}', must be 1..=6");
+                return ExitCode::FAILURE;
+            }
             base_cfg.active_dpi = ad;
         }
         if let Some(asnap) = cli.angle_snap {
@@ -298,7 +316,7 @@ angle_snap     = {}
     }
 
     // 3. Query battery / status
-    if cli.battery || cli.query_charge_alt {
+    if cli.battery {
         match mouse.get_battery_percentage() {
             Ok(pct) => {
                 println!("{pct}");
@@ -311,16 +329,25 @@ angle_snap     = {}
     } else if cli.json {
         match mouse.get_battery_status() {
             Ok(status) => {
-                let json = serde_json::json!({
-                    "battery": status.percentage,
-                    "percentage": status.percentage,
-                    "is_wired": status.is_wired,
-                    "raw_charge": status.raw_charge,
-                    "status_code": status.status_code,
-                    "tooltip": format!("Attack Shark R1: {}%{}", status.percentage, if status.is_wired { " (Wired)" } else { "" }),
-                    "class": if status.percentage <= 20 { "critical" } else if status.percentage <= 40 { "warning" } else { "normal" }
-                });
-                println!("{}", json);
+                let class_name = if status.percentage <= 20 {
+                    "critical"
+                } else if status.percentage <= 40 {
+                    "warning"
+                } else {
+                    "normal"
+                };
+                let wired_suffix = if status.is_wired { " (Wired)" } else { "" };
+                println!(
+                    r#"{{"battery":{},"percentage":{},"is_wired":{},"raw_charge":{},"status_code":{},"tooltip":"Attack Shark R1: {}%{}","class":"{}"}}"#,
+                    status.percentage,
+                    status.percentage,
+                    status.is_wired,
+                    status.raw_charge,
+                    status.status_code,
+                    status.percentage,
+                    wired_suffix,
+                    class_name
+                );
             }
             Err(e) => {
                 eprintln!("Error querying battery: {e}");
@@ -396,3 +423,4 @@ fn run_daemon(interval_secs: u64) -> ExitCode {
         std::thread::sleep(std::time::Duration::from_secs(interval_secs));
     }
 }
+

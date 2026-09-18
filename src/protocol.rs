@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use device_driver::{FieldsetMetadata, RegisterInterface, RegisterInterfaceBase};
 use rusb::{DeviceHandle, GlobalContext};
-use serde::{Deserialize, Serialize};
 
 use crate::error::DriverError;
 
@@ -19,7 +18,7 @@ device_driver::compile!(
 );
 
 /// Mouse polling rate options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum PollingRate {
     Hz125 = 0xf708,

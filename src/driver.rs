@@ -1,5 +1,4 @@
 use device_driver::{Block, FieldsetMetadata, RegisterInterface};
-use serde::{Deserialize, Serialize};
 
 use crate::config::MouseConfig;
 use crate::dpi::dpi_to_byte;
@@ -10,7 +9,7 @@ use crate::protocol::{
 };
 
 /// High-level representation of the mouse battery status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BatteryStatus {
     /// Battery charge percentage (0-100%).
     pub percentage: u8,
